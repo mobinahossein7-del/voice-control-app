@@ -17,6 +17,11 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: Clean previous buildozer cache to avoid old SDK versions
+      run: |
+        rm -rf ~/.buildozer
+        rm -rf .buildozer
+
     - name: Install dependencies
       run: |
         sudo dpkg --add-architecture i386
