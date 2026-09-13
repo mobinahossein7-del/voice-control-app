@@ -17,7 +17,7 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Clean previous buildozer cache to avoid old SDK versions
+    - name: Clean previous buildozer cache
       run: |
         rm -rf ~/.buildozer
         rm -rf .buildozer
@@ -45,11 +45,21 @@ jobs:
         pip install --upgrade pip
         pip install cython==0.29.33 buildozer
 
-    - name: Accept Android SDK licenses
+    - name: Install Android SDK packages and accept licenses
       run: |
-        mkdir -p ~/.android
-        touch ~/.android/repositories.cfg
-        yes | sdkmanager --licenses || true
+        # تثبيت أداة الـ sdkmanager عبر بيئة أندرويد الافتراضية لـ buildozer أو استخدام الأمر المباشر
+        export ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk"
+        mkdir -p $ANDROID_HOME
+        
+        # السماح لـ buildozer بتحضير الـ SDK أولاً لتوفير المسارات
+        yes | buildozer android pgs || true
+        
+        # أو تثبيت الأدوات يدوياً لضمان وجود الـ aidl و build-tools
+        if [ -d "$HOME/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin" ]; then
+            export PATH="$PATH:$HOME/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin"
+            yes | sdkmanager --licenses || true
+            sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.0" || true
+        fi
 
     - name: Build APK with Buildozer
       run: |
