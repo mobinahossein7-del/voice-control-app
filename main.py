@@ -1,16 +1,56 @@
-from kivy.app import App
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
-from kivy.uix.label import QLabel
+name: Build APK
 
-class VoiceControlApp(App):
-    def build(self):
-        layout = BoxLayout(orientation='vertical', padding=50, spacing=20)
-        self.label = QLabel(text="التحكم الصوتي بالإعدادات\nاضغط للتحدث", font_size=20)
-        layout.add_widget(self.label)
-        btn = Button(text="بدء الاستماع", font_size=22)
-        layout.add_widget(btn)
-        return layout
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-if __name__ == '__main__':
-    VoiceControlApp().run()
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+            python3-pip \
+            build-essential \
+            git \
+            python3-dev \
+            ccache \
+            bison \
+            flex \
+            make \
+            zip \
+            unzip \
+            zlib1g-dev \
+            openjdk-17-jdk \
+            pkg-config \
+            autoconf \
+            libtool \
+            libffi-dev \
+            libssl-dev \
+            libtool-bin
+
+    - name: Install Buildozer and Cython
+      run: |
+        pip install --upgrade pip
+        pip install cython==0.29.33 buildozer
+
+    - name: Build APK with Buildozer
+      run: |
+        buildozer -v android debug
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: package
+        path: bin/*.apk
