@@ -1,206 +1,173 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import re
 
 from kivy.app import App
 from kivy.clock import Clock
-from kivy.core.window import Window
+from kivy.core.text import LabelBase
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 
-# Android permissions
-try:
-    from android.permissions import (
-        Permission,
-        check_permission,
-        request_permissions,
-    )
-    ANDROID_AVAILABLE = True
-except Exception:
-    ANDROID_AVAILABLE = False
+FONT_FILE = "NotoKufiArabic-Regular.ttf"
 
-# PyJNIus
+try:
+    LabelBase.register(name="Arabic", fn_regular=FONT_FILE)
+    ARABIC_FONT = "Arabic"
+except Exception:
+    ARABIC_FONT = "Roboto"
+
+try:
+    from android.permissions import Permission, request_permissions
+except Exception:
+    Permission = None
+    request_permissions = None
+
 try:
     from jnius import autoclass, PythonJavaClass, java_method
-    PYJNIUS_AVAILABLE = True
 except Exception:
-    PYJNIUS_AVAILABLE = False
+    autoclass = None
+    PythonJavaClass = object
+
+    def java_method(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
 
 
-class VoiceRecognitionListener(
-    PythonJavaClass if PYJNIUS_AVAILABLE else object
-):
-
-    if PYJNIUS_AVAILABLE:
-
-        __javainterfaces__ = [
-            "android/speech/RecognitionListener"
-        ]
-
-        __javacontext__ = "app"
-
-        @java_method("(Landroid/os/Bundle;)V")
-        def onReadyForSpeech(self, params):
-            if self.app:
-                self.app.set_status("🎙️ استمع الآن...")
-
-        @java_method("()V")
-        def onBeginningOfSpeech(self):
-            if self.app:
-                self.app.set_status("🎙️ جارٍ الاستماع...")
-
-        @java_method("([B)V")
-        def onBufferReceived(self, buffer):
-            pass
-
-        @java_method("(F)V")
-        def onRmsChanged(self, rmsdB):
-            pass
-
-        @java_method("(Landroid/os/Bundle;)V")
-        def onEndOfSpeech(self):
-            if self.app:
-                self.app.set_status("⏳ جارٍ تحليل الكلام...")
-
-        @java_method("(I)V")
-        def onError(self, error):
-            if self.app:
-                self.app.on_speech_error(error)
-
-        @java_method("(Landroid/os/Bundle;)V")
-        def onResults(self, results):
-            if self.app:
-                self.app.on_speech_results(results)
-
-        @java_method("(Landroid/os/Bundle;)V")
-        def onPartialResults(self, results):
-            if self.app:
-                self.app.on_partial_results(results)
-
-        @java_method("(I[Ljava/lang/String;)V")
-        def onEvent(self, eventType, params):
-            pass
+class SpeechListener(PythonJavaClass):
+    __javainterfaces__ = ["android/speech/RecognitionListener"]
 
     def __init__(self, app):
-        if PYJNIUS_AVAILABLE:
-            super().__init__()
-
+        super().__init__()
         self.app = app
+
+    @java_method("(Landroid/os/Bundle;)V")
+    def onReadyForSpeech(self, params):
+        self.app.set_status("🎙️ استمع الآن...")
+
+    @java_method("()V")
+    def onBeginningOfSpeech(self):
+        self.app.set_status("🎙️ أستمع إلى كلامك...")
+
+    @java_method("(F)V")
+    def onRmsChanged(self, rmsdB):
+        pass
+
+    @java_method("([B)V")
+    def onBufferReceived(self, buffer):
+        pass
+
+    @java_method("()V")
+    def onEndOfSpeech(self):
+        self.app.set_status("⏳ جارٍ تحليل الأمر...")
+
+    @java_method("(I)V")
+    def onError(self, error):
+        messages = {
+            1: "لم أفهم الكلام، حاول مرة أخرى.",
+            2: "تعذر الاتصال بخدمة التعرف الصوتي.",
+            3: "انتهى وقت التعرف الصوتي.",
+            4: "خدمة التعرف الصوتي غير متاحة.",
+            5: "خطأ في الصوت.",
+            6: "لم يبدأ الكلام.",
+            7: "لم يتم العثور على نتيجة.",
+            8: "خدمة التعرف مشغولة.",
+            9: "صلاحية التعرف الصوتي غير مسموحة.",
+        }
+
+        self.app.set_status(
+            messages.get(error, f"حدث خطأ في التعرف: {error}")
+        )
+        self.app.set_listening(False)
+
+    @java_method("(Landroid/os/Bundle;)V")
+    def onResults(self, results):
+        self.app.handle_speech_results(results)
+        self.app.set_listening(False)
+
+    @java_method("(Landroid/os/Bundle;)V")
+    def onPartialResults(self, results):
+        self.app.handle_partial_results(results)
+
+    @java_method("(ILandroid/os/Bundle;)V")
+    def onEvent(self, eventType, params):
+        pass
 
 
 class VoiceControlApp(App):
 
     title = "التحكم الصوتي"
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.recognizer = None
-        self.intent = None
-        self.listener = None
-        self.listening = False
-        self.last_text = ""
+    recognizer = None
+    listener = None
+    is_listening = False
 
     def build(self):
-
-        Window.clearcolor = (
-            0.96,
-            0.97,
-            0.98,
-            1
-        )
 
         root = BoxLayout(
             orientation="vertical",
             padding=dp(18),
-            spacing=dp(12)
-        )
-
-        # Header
-        header = BoxLayout(
-            orientation="vertical",
-            size_hint_y=None,
-            height=dp(92),
-            spacing=dp(4)
+            spacing=dp(12),
         )
 
         title = Label(
             text="التحكم الصوتي",
-            font_size=dp(28),
-            bold=True,
-            color=(0.08, 0.09, 0.12, 1),
-            halign="right",
-            valign="middle"
-        )
-
-        title.bind(
-            size=lambda obj, value:
-            setattr(obj, "text_size", value)
-        )
-
-        subtitle = Label(
-            text="تحدث بالعربية وسأعرض ما تم التعرف عليه",
-            font_size=dp(15),
-            color=(0.30, 0.32, 0.36, 1),
-            halign="right",
-            valign="middle"
-        )
-
-        subtitle.bind(
-            size=lambda obj, value:
-            setattr(obj, "text_size", value)
-        )
-
-        header.add_widget(title)
-        header.add_widget(subtitle)
-
-        root.add_widget(header)
-
-        # Status
-        self.status = Label(
-            text="جاهز للاستماع",
-            font_size=dp(18),
-            bold=True,
+            font_name=ARABIC_FONT,
+            font_size=dp(25),
             size_hint_y=None,
-            height=dp(48),
-            color=(0.10, 0.35, 0.65, 1),
+            height=dp(55),
+        )
+
+        root.add_widget(title)
+
+        self.status = Label(
+            text="اضغط على زر التحدث ثم قل أمرًا",
+            font_name=ARABIC_FONT,
+            font_size=dp(17),
             halign="center",
-            valign="middle"
+            valign="middle",
+            size_hint_y=None,
+            height=dp(70),
         )
 
-        self.status.bind(
-            size=lambda obj, value:
-            setattr(obj, "text_size", value)
-        )
-
+        self.status.bind(size=self._update_text_size)
         root.add_widget(self.status)
 
-        # Recognition result
-        self.result_label = Label(
-            text="لم يتم التعرف على أي كلام بعد.",
-            font_size=dp(20),
-            color=(0.10, 0.10, 0.12, 1),
+        self.result = Label(
+            text="لم يتم التعرف على أي أمر بعد.",
+            font_name=ARABIC_FONT,
+            font_size=dp(18),
             halign="right",
-            valign="top"
+            valign="top",
+            size_hint_y=None,
+            height=dp(150),
+        )
+
+        self.result.bind(
+            texture_size=self._update_result_height
+        )
+
+        self.result.bind(
+            size=self._update_text_size
         )
 
         scroll = ScrollView(
-            do_scroll_x=False,
-            bar_width=dp(4)
+            size_hint=(1, 1)
         )
 
-        scroll.add_widget(self.result_label)
-
+        scroll.add_widget(self.result)
         root.add_widget(scroll)
 
-        # Microphone button
         self.listen_button = Button(
-            text="🎙️  بدء الاستماع",
-            font_size=dp(21),
-            bold=True,
+            text="🎙️ بدء الاستماع",
+            font_name=ARABIC_FONT,
+            font_size=dp(20),
             size_hint_y=None,
-            height=dp(64)
+            height=dp(58),
         )
 
         self.listen_button.bind(
@@ -209,90 +176,138 @@ class VoiceControlApp(App):
 
         root.add_widget(self.listen_button)
 
-        # Bottom buttons
-        buttons = BoxLayout(
+        row = BoxLayout(
             orientation="horizontal",
+            spacing=dp(10),
             size_hint_y=None,
-            height=dp(52),
-            spacing=dp(10)
+            height=dp(55),
         )
 
-        clear_button = Button(
+        clear_btn = Button(
             text="مسح",
-            font_size=dp(16)
+            font_name=ARABIC_FONT,
+            font_size=dp(17),
         )
 
-        clear_button.bind(
-            on_release=self.clear_result
+        clear_btn.bind(
+            on_release=lambda *_: self.clear_text()
         )
 
-        help_button = Button(
-            text="المساعدة",
-            font_size=dp(16)
+        help_btn = Button(
+            text="الأوامر",
+            font_name=ARABIC_FONT,
+            font_size=dp(17),
         )
 
-        help_button.bind(
-            on_release=self.show_help
+        help_btn.bind(
+            on_release=lambda *_: self.show_help()
         )
 
-        buttons.add_widget(clear_button)
-        buttons.add_widget(help_button)
+        row.add_widget(clear_btn)
+        row.add_widget(help_btn)
 
-        root.add_widget(buttons)
-
-        # Information
-        self.info = Label(
-            text="الميكروفون يحتاج إلى إذن من Android عند أول استخدام.",
-            font_size=dp(13),
-            color=(0.35, 0.36, 0.40, 1),
-            size_hint_y=None,
-            height=dp(38),
-            halign="center",
-            valign="middle"
-        )
-
-        self.info.bind(
-            size=lambda obj, value:
-            setattr(obj, "text_size", value)
-        )
-
-        root.add_widget(self.info)
+        root.add_widget(row)
 
         Clock.schedule_once(
-            self.initialize_android,
+            lambda *_: self.prepare_android(),
             0.5
         )
 
         return root
 
+    def _update_text_size(self, instance, _size):
+        instance.text_size = (
+            instance.width - dp(10),
+            None
+        )
+
+    def _update_result_height(self, instance, _size):
+        self.result.height = max(
+            dp(150),
+            instance.texture_size[1] + dp(20)
+        )
+
     def set_status(self, text):
+        Clock.schedule_once(
+            lambda *_: setattr(
+                self.status,
+                "text",
+                text
+            )
+        )
 
-        self.status.text = text
+    def set_listening(self, value):
 
-    def initialize_android(self, *_args):
+        self.is_listening = value
 
-        if not ANDROID_AVAILABLE:
+        Clock.schedule_once(
+            self._update_button
+        )
 
-            self.info.text = (
-                "وضع الاختبار: ميزات Android "
-                "الصوتية تعمل داخل APK."
+    def _update_button(self, *_):
+
+        if self.is_listening:
+            self.listen_button.text = (
+                "⏹️ إيقاف الاستماع"
+            )
+        else:
+            self.listen_button.text = (
+                "🎙️ بدء الاستماع"
             )
 
-            return
+    def clear_text(self):
 
-        self.request_microphone_permission()
+        self.result.text = "تم مسح النص."
 
-        if not PYJNIUS_AVAILABLE:
+        self.set_status(
+            "جاهز للاستماع."
+        )
+
+    def show_help(self):
+
+        self.result.text = (
+            "أمثلة على الأوامر:\n\n"
+
+            "• ارفع الصوت\n"
+            "• اخفض الصوت\n"
+            "• كتم الصوت\n"
+            "• الصوت 50 بالمئة\n\n"
+
+            "• سطوع 50 بالمئة\n"
+            "• ارفع السطوع\n"
+            "• اخفض السطوع\n\n"
+
+            "• شغل الواي فاي\n"
+            "• أوقف الواي فاي\n"
+            "• افتح إعدادات الواي فاي\n\n"
+
+            "• افتح البلوتوث\n"
+            "• افتح الإعدادات\n"
+            "• افتح إعدادات الشاشة"
+        )
+
+    # ---------------- Android ----------------
+
+    def prepare_android(self):
+
+        if autoclass is None:
 
             self.set_status(
-                "مكوّن Android الصوتي غير متاح"
-            )
-
-            self.info.text = (
-                "تحقق من تضمين pyjnius في APK."
+                "هذا الإصدار يحتاج Android + PyJNIus."
             )
 
             return
+
+        if Permission is not None:
+
+            try:
+
+                request_permissions(
+                    [Permission.RECORD_AUDIO]
+                )
+
+            except Exception:
+                pass
 
         try:
 
@@ -300,184 +315,104 @@ class VoiceControlApp(App):
                 "android.speech.SpeechRecognizer"
             )
 
-            self.recognizer = SpeechRecognizer(
-                self._get_activity()
+            activity = autoclass(
+                "org.kivy.android.PythonActivity"
+            ).mActivity
+
+            if not SpeechRecognizer.isRecognitionAvailable(
+                activity
+            ):
+
+                self.set_status(
+                    "التعرف الصوتي غير متاح على هذا الهاتف."
+                )
+
+                return
+
+            self.recognizer = (
+                SpeechRecognizer.createSpeechRecognizer(
+                    activity
+                )
             )
 
-            self.listener = VoiceRecognitionListener(
-                self
-            )
+            self.listener = SpeechListener(self)
 
             self.recognizer.setRecognitionListener(
                 self.listener
             )
 
+            self.activity = activity
+
+            self.Intent = autoclass(
+                "android.content.Intent"
+            )
+
+            self.RecognizerIntent = autoclass(
+                "android.speech.RecognizerIntent"
+            )
+
             self.set_status(
-                "جاهز للاستماع"
+                "جاهز. اضغط «بدء الاستماع»."
             )
 
         except Exception as exc:
 
-            self.recognizer = None
-
             self.set_status(
-                "تعذر تهيئة التعرف الصوتي"
+                f"تعذر تجهيز التعرف الصوتي: {exc}"
             )
 
-            self.info.text = (
-                "تأكد من وجود خدمة التعرف على الكلام "
-                "في الجهاز."
-            )
+    def toggle_listening(self, *_):
 
-            print(
-                "SpeechRecognizer initialization error:",
-                exc
-            )
-
-    def _get_activity(self):
-
-        PythonActivity = autoclass(
-            "org.kivy.android.PythonActivity"
-        )
-
-        return PythonActivity.mActivity
-
-    def request_microphone_permission(self):
-
-        if not ANDROID_AVAILABLE:
-            return
-
-        try:
-
-            if not check_permission(
-                Permission.RECORD_AUDIO
-            ):
-
-                request_permissions(
-                    [Permission.RECORD_AUDIO],
-                    self.permission_callback
-                )
-
-        except Exception as exc:
-
-            print(
-                "Permission error:",
-                exc
-            )
-
-    def permission_callback(
-        self,
-        permissions,
-        grant_results
-    ):
-
-        Clock.schedule_once(
-            lambda *_:
-            self.set_status("جاهز للاستماع"),
-            0.2
-        )
-
-    def create_intent(self):
-
-        Intent = autoclass(
-            "android.content.Intent"
-        )
-
-        RecognizerIntent = autoclass(
-            "android.speech.RecognizerIntent"
-        )
-
-        intent = Intent(
-            RecognizerIntent.ACTION_RECOGNIZE_SPEECH
-        )
-
-        intent.putExtra(
-            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-        )
-
-        intent.putExtra(
-            RecognizerIntent.EXTRA_LANGUAGE,
-            "ar"
-        )
-
-        intent.putExtra(
-            RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
-            "ar"
-        )
-
-        intent.putExtra(
-            RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-            True
-        )
-
-        intent.putExtra(
-            RecognizerIntent.EXTRA_MAX_RESULTS,
-            5
-        )
-
-        return intent
-
-    def toggle_listening(self, *_args):
-
-        if self.listening:
-
+        if self.is_listening:
             self.stop_listening()
-
         else:
-
             self.start_listening()
 
     def start_listening(self):
 
-        if (
-            not ANDROID_AVAILABLE
-            or not PYJNIUS_AVAILABLE
-        ):
-
-            self.set_status(
-                "هذه الميزة تحتاج إلى APK على Android"
-            )
-
-            return
-
         if self.recognizer is None:
 
-            self.initialize_android()
+            self.prepare_android()
 
             if self.recognizer is None:
                 return
 
         try:
 
-            if not check_permission(
-                Permission.RECORD_AUDIO
-            ):
+            intent = self.Intent(
+                self.RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+            )
 
-                self.request_microphone_permission()
+            intent.putExtra(
+                self.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                self.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
 
-                self.set_status(
-                    "اسمح بالميكروفون ثم اضغط مرة أخرى"
-                )
+            intent.putExtra(
+                self.RecognizerIntent.EXTRA_LANGUAGE,
+                "ar"
+            )
 
-                return
+            intent.putExtra(
+                self.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
+                "ar"
+            )
 
-        except Exception:
-            pass
+            intent.putExtra(
+                self.RecognizerIntent.EXTRA_PARTIAL_RESULTS,
+                True
+            )
 
-        try:
-
-            self.intent = self.create_intent()
+            intent.putExtra(
+                self.RecognizerIntent.EXTRA_MAX_RESULTS,
+                5
+            )
 
             self.recognizer.startListening(
-                self.intent
+                intent
             )
 
-            self.listening = True
-
-            self.listen_button.text = (
-                "⏹️  إيقاف الاستماع"
-            )
+            self.set_listening(True)
 
             self.set_status(
                 "🎙️ استمع الآن..."
@@ -485,254 +420,515 @@ class VoiceControlApp(App):
 
         except Exception as exc:
 
-            self.listening = False
-
-            self.listen_button.text = (
-                "🎙️  بدء الاستماع"
-            )
-
             self.set_status(
-                "تعذر بدء الاستماع"
+                f"تعذر بدء الاستماع: {exc}"
             )
 
-            self.info.text = (
-                "تأكد من وجود خدمة التعرف على الكلام "
-                "على الهاتف."
-            )
-
-            print(
-                "startListening error:",
-                exc
-            )
+            self.set_listening(False)
 
     def stop_listening(self):
 
         try:
 
             if self.recognizer is not None:
-
                 self.recognizer.stopListening()
-
-        except Exception as exc:
-
-            print(
-                "stopListening error:",
-                exc
-            )
-
-        self.listening = False
-
-        self.listen_button.text = (
-            "🎙️  بدء الاستماع"
-        )
-
-        self.set_status(
-            "تم إيقاف الاستماع"
-        )
-
-    def extract_text(self, bundle):
-
-        if (
-            not PYJNIUS_AVAILABLE
-            or bundle is None
-        ):
-
-            return ""
-
-        try:
-
-            SpeechRecognizer = autoclass(
-                "android.speech.SpeechRecognizer"
-            )
-
-            key = (
-                SpeechRecognizer.RESULTS_RECOGNITION
-            )
-
-            results = bundle.getStringArrayList(
-                key
-            )
-
-            if (
-                results is None
-                or results.size() == 0
-            ):
-
-                return ""
-
-            return str(
-                results.get(0)
-            )
-
-        except Exception as exc:
-
-            print(
-                "Result extraction error:",
-                exc
-            )
-
-            return ""
-
-    def on_speech_results(self, bundle):
-
-        text = self.extract_text(
-            bundle
-        )
-
-        self.listening = False
-
-        self.listen_button.text = (
-            "🎙️  بدء الاستماع"
-        )
-
-        if text:
-
-            self.last_text = text
-
-            self.result_label.text = text
-
-            self.set_status(
-                "✅ تم التعرف على الكلام"
-            )
-
-            self.handle_command(text)
-
-        else:
-
-            self.set_status(
-                "لم يتم التعرف على الكلام"
-            )
-
-    def on_partial_results(self, bundle):
-
-        text = self.extract_text(
-            bundle
-        )
-
-        if text:
-
-            self.result_label.text = text
-
-            self.set_status(
-                "🎙️ جارٍ الاستماع..."
-            )
-
-    def on_speech_error(self, error):
-
-        self.listening = False
-
-        self.listen_button.text = (
-            "🎙️  بدء الاستماع"
-        )
-
-        messages = {
-
-            1: "حدث خطأ في الشبكة",
-
-            2: "لا توجد استجابة من الشبكة",
-
-            3: "تعذر تشغيل الصوت",
-
-            4: "الخدمة غير متاحة",
-
-            5: "حدث خطأ في التطبيق",
-
-            6: "انتهت مهلة الاستماع",
-
-            7: "لم أفهم الكلام",
-
-            8: "خدمة التعرف مشغولة",
-
-            9: "لا تملك صلاحية التعرف الصوتي",
-
-            10: "حدث خطأ في الأذونات"
-        }
-
-        self.set_status(
-            messages.get(
-                int(error),
-                "حدث خطأ في التعرف الصوتي"
-            )
-        )
-
-    def handle_command(self, text):
-
-        normalized = text.strip().lower()
-
-        if (
-            "مساعدة" in normalized
-            or "الأوامر" in normalized
-        ):
-
-            self.show_help()
-
-        elif (
-            "مسح" in normalized
-            or "امسح" in normalized
-        ):
-
-            self.clear_result()
-
-        elif (
-            "توقف" in normalized
-            or "أوقف الاستماع" in normalized
-        ):
-
-            self.stop_listening()
-
-        elif (
-            "ابدأ" in normalized
-            and "استماع" in normalized
-        ):
-
-            Clock.schedule_once(
-                lambda *_:
-                self.start_listening(),
-                0.2
-            )
-
-    def clear_result(self, *_args):
-
-        self.last_text = ""
-
-        self.result_label.text = (
-            "لم يتم التعرف على أي كلام بعد."
-        )
-
-        self.set_status(
-            "جاهز للاستماع"
-        )
-
-    def show_help(self, *_args):
-
-        self.result_label.text = (
-            "الأوامر المتاحة داخل التطبيق:\n\n"
-            "• «ابدأ الاستماع»\n"
-            "• «أوقف الاستماع»\n"
-            "• «امسح»\n"
-            "• «مساعدة»\n\n"
-            "يمكنك أيضاً التحدث بشكل طبيعي، "
-            "وسيظهر النص الذي يتعرف عليه Android هنا."
-        )
-
-        self.set_status(
-            "المساعدة"
-        )
-
-    def on_stop(self):
-
-        try:
-
-            if self.recognizer is not None:
-
-                self.recognizer.destroy()
 
         except Exception:
             pass
 
-        self.recognizer = None
+        self.set_listening(False)
+
+        self.set_status(
+            "تم إيقاف الاستماع."
+        )
+
+    def _bundle_text(self, bundle):
+
+        if bundle is None:
+            return ""
+
+        try:
+
+            texts = bundle.getStringArrayList(
+                self.RecognizerIntent.EXTRA_RESULTS
+            )
+
+            if texts is None:
+                return ""
+
+            return " / ".join(
+                str(x) for x in texts[:5]
+            )
+
+        except Exception:
+
+            return ""
+
+    def handle_partial_results(self, bundle):
+
+        text = self._bundle_text(bundle)
+
+        if text:
+
+            self.result.text = (
+                f"أسمع: {text}"
+            )
+
+    def handle_speech_results(self, bundle):
+
+        text = self._bundle_text(bundle)
+
+        if not text:
+
+            self.set_status(
+                "لم يتم التعرف على الكلام."
+            )
+
+            return
+
+        self.result.text = (
+            f"الأمر: {text}"
+        )
+
+        first = text.split(
+            " / "
+        )[0].strip()
+
+        self.execute_command(
+            first
+        )
+
+    # ---------------- Settings ----------------
+
+    def open_settings(self, action):
+
+        try:
+
+            intent = self.Intent(
+                action
+            )
+
+            self.activity.startActivity(
+                intent
+            )
+
+            return True
+
+        except Exception as exc:
+
+            self.set_status(
+                f"تعذر فتح الإعدادات: {exc}"
+            )
+
+            return False
+
+    def adjust_volume(self, direction):
+
+        try:
+
+            AudioManager = autoclass(
+                "android.media.AudioManager"
+            )
+
+            Context = autoclass(
+                "android.content.Context"
+            )
+
+            audio = self.activity.getSystemService(
+                Context.AUDIO_SERVICE
+            )
+
+            if direction == "up":
+
+                audio.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_RAISE,
+                    AudioManager.FLAG_SHOW_UI,
+                )
+
+                self.set_status(
+                    "تم رفع صوت الوسائط."
+                )
+
+            elif direction == "down":
+
+                audio.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_LOWER,
+                    AudioManager.FLAG_SHOW_UI,
+                )
+
+                self.set_status(
+                    "تم خفض صوت الوسائط."
+                )
+
+            elif direction == "mute":
+
+                audio.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_MUTE,
+                    AudioManager.FLAG_SHOW_UI,
+                )
+
+                self.set_status(
+                    "تم كتم صوت الوسائط."
+                )
+
+            return True
+
+        except Exception as exc:
+
+            self.set_status(
+                f"تعذر التحكم بالصوت: {exc}"
+            )
+
+            return False
+
+    def set_volume_percent(self, percent):
+
+        try:
+
+            percent = max(
+                0,
+                min(100, int(percent))
+            )
+
+            AudioManager = autoclass(
+                "android.media.AudioManager"
+            )
+
+            Context = autoclass(
+                "android.content.Context"
+            )
+
+            audio = self.activity.getSystemService(
+                Context.AUDIO_SERVICE
+            )
+
+            maximum = audio.getStreamMaxVolume(
+                AudioManager.STREAM_MUSIC
+            )
+
+            value = round(
+                maximum * percent / 100.0
+            )
+
+            audio.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                value,
+                AudioManager.FLAG_SHOW_UI,
+            )
+
+            self.set_status(
+                f"تم ضبط صوت الوسائط على {percent}٪."
+            )
+
+            return True
+
+        except Exception as exc:
+
+            self.set_status(
+                f"تعذر ضبط الصوت: {exc}"
+            )
+
+            return False
+
+    def _open_write_settings(self):
+
+        try:
+
+            Settings = autoclass(
+                "android.provider.Settings"
+            )
+
+            if Settings.System.canWrite(
+                self.activity
+            ):
+
+                return True
+
+            intent = self.Intent(
+                Settings.ACTION_MANAGE_WRITE_SETTINGS
+            )
+
+            Uri = autoclass(
+                "android.net.Uri"
+            )
+
+            intent.setData(
+                Uri.parse(
+                    "package:" +
+                    self.activity.getPackageName()
+                )
+            )
+
+            self.activity.startActivity(
+                intent
+            )
+
+            self.set_status(
+                "اسمح للتطبيق بتعديل إعدادات النظام، ثم أعد أمر السطوع."
+            )
+
+            return False
+
+        except Exception as exc:
+
+            self.set_status(
+                f"تعذر طلب صلاحية السطوع: {exc}"
+            )
+
+            return False
+
+    def set_brightness_percent(self, percent):
+
+        try:
+
+            percent = max(
+                1,
+                min(100, int(percent))
+            )
+
+            if not self._open_write_settings():
+                return False
+
+            Settings = autoclass(
+                "android.provider.Settings"
+            )
+
+            value = round(
+                255 * percent / 100.0
+            )
+
+            Settings.System.putInt(
+                self.activity.getContentResolver(),
+                Settings.System.SCREEN_BRIGHTNESS,
+                value,
+            )
+
+            self.set_status(
+                f"تم ضبط السطوع على {percent}٪."
+            )
+
+            return True
+
+        except Exception as exc:
+
+            self.set_status(
+                f"تعذر ضبط السطوع: {exc}"
+            )
+
+            return False
+
+    def open_wifi(self):
+
+        return self.open_settings(
+            "android.settings.WIFI_SETTINGS"
+        )
+
+    def open_bluetooth(self):
+
+        return self.open_settings(
+            "android.settings.BLUETOOTH_SETTINGS"
+        )
+
+    def open_display(self):
+
+        return self.open_settings(
+            "android.settings.DISPLAY_SETTINGS"
+        )
+
+    def open_general_settings(self):
+
+        return self.open_settings(
+            "android.settings.SETTINGS"
+        )
+
+    # ---------------- Commands ----------------
+
+    def execute_command(self, command):
+
+        c = command.strip().lower()
+
+        normalized = (
+            c.replace("أ", "ا")
+             .replace("إ", "ا")
+             .replace("آ", "ا")
+        )
+
+        # Wi-Fi settings
+        if (
+            "اعدادات الواي فاي" in normalized
+            or "اعدادات wifi" in normalized
+        ):
+
+            self.open_wifi()
+            return
+
+        # Bluetooth settings
+        if "اعدادات البلوتوث" in normalized:
+
+            self.open_bluetooth()
+            return
+
+        # Display settings
+        if (
+            "اعدادات الشاشه" in normalized
+            or "اعدادات الشاشة" in c
+        ):
+
+            self.open_display()
+            return
+
+        # General settings
+        if (
+            "افتح الاعدادات" in normalized
+            or "افتح الإعدادات" in c
+        ):
+
+            self.open_general_settings()
+            return
+
+        # Wi-Fi
+        if (
+            "واي فاي" in normalized
+            or "wifi" in normalized
+        ):
+
+            self.open_wifi()
+
+            self.set_status(
+                "فتحت إعدادات Wi-Fi لتشغيلها أو إيقافها."
+            )
+
+            return
+
+        # Bluetooth
+        if (
+            "بلوتوث" in normalized
+            or "bluetooth" in normalized
+        ):
+
+            self.open_bluetooth()
+
+            self.set_status(
+                "فتحت إعدادات Bluetooth."
+            )
+
+            return
+
+        # Mute
+        if (
+            "كتم الصوت" in normalized
+            or normalized == "اكتم"
+        ):
+
+            self.adjust_volume(
+                "mute"
+            )
+
+            return
+
+        # Volume percentage
+        m = re.search(
+            r"(?:صوت|مستوى الصوت)\s*(\d{1,3})"
+            r"\s*(?:بالمئة|بالمائة|٪|%)?",
+            normalized
+        )
+
+        if m:
+
+            self.set_volume_percent(
+                m.group(1)
+            )
+
+            return
+
+        # Increase volume
+        if any(
+            x in normalized
+            for x in [
+                "ارفع الصوت",
+                "علي الصوت",
+                "اعلى الصوت",
+            ]
+        ):
+
+            self.adjust_volume(
+                "up"
+            )
+
+            return
+
+        # Decrease volume
+        if any(
+            x in normalized
+            for x in [
+                "اخفض الصوت",
+                "وطي الصوت",
+                "خفض الصوت",
+            ]
+        ):
+
+            self.adjust_volume(
+                "down"
+            )
+
+            return
+
+        # Brightness percentage
+        m = re.search(
+            r"(?:سطوع|اضاءة|إضاءة)\s*(\d{1,3})"
+            r"\s*(?:بالمئة|بالمائة|٪|%)?",
+            c
+        )
+
+        if m:
+
+            self.set_brightness_percent(
+                m.group(1)
+            )
+
+            return
+
+        # Increase brightness
+        if any(
+            x in normalized
+            for x in [
+                "ارفع السطوع",
+                "زود السطوع",
+                "ارفع الاضاءة",
+                "ارفع الاضاءه",
+            ]
+        ):
+
+            self.set_brightness_percent(
+                100
+            )
+
+            return
+
+        # Decrease brightness
+        if any(
+            x in normalized
+            for x in [
+                "اخفض السطوع",
+                "قلل السطوع",
+                "اخفض الاضاءة",
+                "اخفض الاضاءه",
+            ]
+        ):
+
+            self.set_brightness_percent(
+                20
+            )
+
+            return
+
+        self.set_status(
+            "لم أجد أمرًا مطابقًا. اضغط «الأوامر» لرؤية الأمثلة."
+        )
 
 
 if __name__ == "__main__":
-
     VoiceControlApp().run()
