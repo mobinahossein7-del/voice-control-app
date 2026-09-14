@@ -1,52 +1,30 @@
 [app]
 
-# اسم التطبيق
-title = Voice Control App
-
-# اسم الحزمة
+title = Voice Control
 package.name = voicecontrol
-
-# نطاق الحزمة
 package.domain = org.voice
 
-# مجلد المشروع
 source.dir = .
+source.include_exts = py,png,jpg,jpeg,kv,atlas,ttf,otf
 
-# الملفات التي سيتم تضمينها
-source.include_exts = py,png,jpg,jpeg,kv,atlas
+version = 1.0
 
-# إصدار التطبيق
-version = 0.1
+requirements = python3,kivy,pyjnius
 
-# المتطلبات
-requirements = python3,kivy
+android.permissions = INTERNET,RECORD_AUDIO
 
-# الصلاحيات
-android.permissions = INTERNET,RECORD_AUDIO,ACCESS_WIFI_STATE,CHANGE_WIFI_STATE
-
-# اتجاه الشاشة
 orientation = portrait
 
-# Android API
-android.api = 36
-
-# أقل إصدار Android مدعوم
+android.api = 33
 android.minapi = 21
+android.ndk = 25b
 
-# إصدار NDK
-android.ndk = 29
-
-# قبول تراخيص Android تلقائياً
 android.accept_sdk_license = True
 
-# استخدام python-for-android الحديث المتوافق مع Python 3.14
-p4a.branch = develop
+p4a.branch = 2024.01.21
 
 
 [buildozer]
 
-# مستوى السجل
 log_level = 2
-
-# تحذير التشغيل كمستخدم root
 warn_on_root = 1
