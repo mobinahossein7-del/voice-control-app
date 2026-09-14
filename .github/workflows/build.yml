@@ -10,20 +10,21 @@ on:
 
 jobs:
   build:
+
     runs-on: ubuntu-22.04
 
     steps:
 
-      # تحميل المشروع
+      # تحميل ملفات المشروع
       - name: Checkout
         uses: actions/checkout@v4
 
 
-      # Python
+      # Python 3.14
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
 
       # Java 17
@@ -34,73 +35,59 @@ jobs:
           java-version: "17"
 
 
-      # متطلبات Linux اللازمة لـ Buildozer
+      # تثبيت متطلبات النظام
       - name: Install system dependencies
         run: |
           sudo apt-get update
 
           sudo apt-get install -y \
-            build-essential \
             git \
-            python3-dev \
+            zip \
+            unzip \
+            build-essential \
             ccache \
-            libncurses5-dev \
-            libncursesw5-dev \
-            libtinfo6 \
-            zlib1g-dev \
-            libffi-dev \
-            libssl-dev \
-            libltdl-dev \
+            python3-dev \
             autoconf \
             automake \
             autopoint \
             libtool \
             pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
             cmake \
-            unzip \
-            zip
+            libffi-dev \
+            libssl-dev \
+            gettext \
+            rustc \
+            cargo
 
 
-      # تثبيت Buildozer و Cython
-      - name: Install Buildozer
+      # تثبيت Buildozer والمتطلبات
+      - name: Install Buildozer dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install setuptools
+          python -m pip install legacy-cgi setuptools
           python -m pip install "cython==0.29.34"
           python -m pip install git+https://github.com/kivy/buildozer.git
 
 
-      # تنظيف أي بناء سابق
-      - name: Clean previous build
+      # تنظيف أي ملفات بناء قديمة
+      - name: Clean Buildozer
         run: |
           rm -rf ~/.buildozer
           rm -rf .buildozer
           rm -rf bin
 
 
-      # التحقق من الملفات
-      - name: Check project files
-        run: |
-          echo "===== PROJECT FILES ====="
-          ls -la
-
-          echo "===== WORKFLOW ====="
-          ls -la .github/workflows
-
-          echo "===== PYTHON ====="
-          python --version
-
-          echo "===== BUILDZER ====="
-          buildozer --version
-
-
       # بناء APK
       - name: Build APK
         run: |
-          yes | buildozer -v android debug
+          buildozer -v android debug
 
 
-      # رفع APK
+      # رفع APK كملف قابل للتحميل
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
